@@ -118,6 +118,9 @@ export function activate(context: vscode.ExtensionContext) {
 	const runHandler = async (request: vscode.TestRunRequest, token: vscode.CancellationToken) => {
 		const run = testController.createTestRun(request);
 	
+		// Reuse a single terminal for all test executions
+		const terminal = vscode.window.createTerminal('Behave Test Runner');
+	
 		const runTestItem = async (testItem: vscode.TestItem) => {
 			run.started(testItem);
 			try {
@@ -125,9 +128,7 @@ export function activate(context: vscode.ExtensionContext) {
 				const featureFile = testItem.uri!.fsPath;
 				const command = `behave ${featureFile} -n "${scenarioName}"`;
 	
-				// Execute the command in the terminal
-				const terminal = vscode.window.createTerminal('Behave Test Runner');
-				terminal.show();
+				// Send the command to the terminal, preserving focus
 				terminal.sendText(command, true);
 	
 				// Assume the test passed for now (since behave output parsing isn't handled here)
@@ -138,8 +139,8 @@ export function activate(context: vscode.ExtensionContext) {
 		};
 	
 		try {
-			// Determine the tests to run
-			const testsToRun = request.include ?? [];
+			// Gather tests to run in an array
+			const testsToRun: vscode.TestItem[] = request.include ? [...request.include] : [];
 	
 			if (testsToRun.length === 0) {
 				// If no specific tests are included, run all tests in the testController
@@ -159,11 +160,13 @@ export function activate(context: vscode.ExtensionContext) {
 				await runTestItem(testItem);
 			}
 		} finally {
+			terminal.dispose(); // Clean up the terminal when done
 			run.end();
 		}
 	};
 	
-	testController.createRunProfile('Run Tests', vscode.TestRunProfileKind.Run, runHandler, true);	
+	testController.createRunProfile('Run Tests', vscode.TestRunProfileKind.Run, runHandler, true);
+	
 
     discoverTestsInWorkspace();
 }
