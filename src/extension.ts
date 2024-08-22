@@ -13,6 +13,7 @@ export function activate(context: vscode.ExtensionContext) {
         const content = fs.readFileSync(fileUri.fsPath, 'utf8');
         const featureItem = testController.createTestItem(fileUri.toString(), path.basename(fileUri.fsPath), fileUri);
         const scenarios = parseFeatureFile(content);
+		console.log(JSON.stringify(scenarios));
 
         for (const scenario of scenarios) {
             const scenarioItem = testController.createTestItem(scenario.id, scenario.name, fileUri);
@@ -78,37 +79,91 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }));
 
-    const runHandler = (request: vscode.TestRunRequest, token: vscode.CancellationToken) => {
-        const run = testController.createTestRun(request);
-
-        const runTestItem = async (testItem: vscode.TestItem) => {
-            run.started(testItem);
-            try {
-                const scenarioName = testItem.label;
-                const featureFile = testItem.uri!.fsPath;
-                const command = `behave ${featureFile} -n "${scenarioName}"`;
-
-                await vscode.commands.executeCommand('workbench.action.terminal.sendSequence', {
-                    text: `${command}\u000D`
-                });
-
-                run.passed(testItem);
-            } catch (err) {
-                run.failed(testItem, new vscode.TestMessage((err as Error).message));
-            } finally {
-                run.end();
-            }
-        };
-
-        for (const testItem of request.include ?? []) {
-            if (token.isCancellationRequested) {
-                break;
-            }
-            runTestItem(testItem);
-        }
-    };
-
-    testController.createRunProfile('Run Tests', vscode.TestRunProfileKind.Run, runHandler, true);
+	// const runHandler = async (request: vscode.TestRunRequest, token: vscode.CancellationToken) => {
+	// 	const run = testController.createTestRun(request);
+	
+	// 	const runTestItem = async (testItem: vscode.TestItem) => {
+	// 		run.started(testItem);
+	// 		try {
+	// 			const scenarioName = testItem.label;
+	// 			const featureFile = testItem.uri!.fsPath;
+	// 			const command = `behave ${featureFile} -n "${scenarioName}"`;
+	
+	// 			// Execute the command in the terminal
+	// 			const terminal = vscode.window.createTerminal('Behave Test Runner');
+	// 			terminal.show();
+	// 			terminal.sendText(command, true);
+	
+	// 			// Assume the test passed for now (since behave output parsing isn't handled here)
+	// 			run.passed(testItem);
+	// 		} catch (err) {
+	// 			run.failed(testItem, new vscode.TestMessage((err as Error).message));
+	// 		}
+	// 	};
+	
+	// 	try {
+	// 		// Iterate over the included tests, or if not specified, iterate over all items in the testController
+	// 		const testsToRun = request.include ?? [...testController.items.values()];
+	
+	// 		for (const testItem of testsToRun) {
+	// 			if (token.isCancellationRequested) {
+	// 				break;
+	// 			}
+	// 			await runTestItem(testItem);
+	// 		}
+	// 	} finally {
+	// 		run.end();
+	// 	}
+	// };
+	const runHandler = async (request: vscode.TestRunRequest, token: vscode.CancellationToken) => {
+		const run = testController.createTestRun(request);
+	
+		const runTestItem = async (testItem: vscode.TestItem) => {
+			run.started(testItem);
+			try {
+				const scenarioName = testItem.label;
+				const featureFile = testItem.uri!.fsPath;
+				const command = `behave ${featureFile} -n "${scenarioName}"`;
+	
+				// Execute the command in the terminal
+				const terminal = vscode.window.createTerminal('Behave Test Runner');
+				terminal.show();
+				terminal.sendText(command, true);
+	
+				// Assume the test passed for now (since behave output parsing isn't handled here)
+				run.passed(testItem);
+			} catch (err) {
+				run.failed(testItem, new vscode.TestMessage((err as Error).message));
+			}
+		};
+	
+		try {
+			// Determine the tests to run
+			const testsToRun = request.include ?? [];
+	
+			if (testsToRun.length === 0) {
+				// If no specific tests are included, run all tests in the testController
+				testController.items.forEach(testItem => {
+					if (token.isCancellationRequested) {
+						return;
+					}
+					testsToRun.push(testItem);
+				});
+			}
+	
+			// Run the tests
+			for (const testItem of testsToRun) {
+				if (token.isCancellationRequested) {
+					break;
+				}
+				await runTestItem(testItem);
+			}
+		} finally {
+			run.end();
+		}
+	};
+	
+	testController.createRunProfile('Run Tests', vscode.TestRunProfileKind.Run, runHandler, true);	
 
     discoverTestsInWorkspace();
 }
