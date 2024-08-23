@@ -1,174 +1,124 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
-import * as fs from 'fs';
-import * as glob from 'glob';
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
     const testController = vscode.tests.createTestController('behaveTestController', 'Behave Tests');
     context.subscriptions.push(testController);
 
-    const featurePattern = '**/*.feature';
-
-    const loadFeatureFile = (fileUri: vscode.Uri) => {
-        const content = fs.readFileSync(fileUri.fsPath, 'utf8');
-        const featureItem = testController.createTestItem(fileUri.toString(), path.basename(fileUri.fsPath), fileUri);
-        const scenarios = parseFeatureFile(content);
-		console.log(JSON.stringify(scenarios));
-
-        for (const scenario of scenarios) {
-            const scenarioItem = testController.createTestItem(scenario.id, scenario.name, fileUri);
-            featureItem.children.add(scenarioItem);
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders) {
+        for (const workspaceFolder of workspaceFolders) {
+            createTestItems(testController, workspaceFolder);
         }
+    }
 
-        return featureItem;
-    };
+    const runHandler = async (request: vscode.TestRunRequest, token: vscode.CancellationToken) => {
+        const run = testController.createTestRun(request);
 
-    const parseFeatureFile = (content: string) => {
-        const lines = content.split('\n');
-        const scenarios = [];
-        let currentScenario: { name: string, id: string } | null = null;
+        // Reuse a single terminal for all test executions
+        const terminal = vscode.window.createTerminal('Behave Test Runner');
 
-        for (const line of lines) {
-            if (line.trim().startsWith('Scenario:')) {
-                if (currentScenario) {
-                    scenarios.push(currentScenario);
+        const runTestItem = async (testItem: vscode.TestItem) => {
+            run.started(testItem);
+            try {
+                const scenarioName = testItem.label;
+                const featureFile = testItem.uri!.fsPath;
+                const command = `behave ${featureFile} -n "${scenarioName}"`;
+
+                // Send the command to the terminal, preserving focus
+                terminal.sendText(command, true);
+
+                // Assume the test passed for now (since behave output parsing isn't handled here)
+                run.passed(testItem);
+            } catch (err) {
+                run.failed(testItem, new vscode.TestMessage((err as Error).message));
+            }
+        };
+
+        const runFolder = async (folderItem: vscode.TestItem) => {
+            for (const featureItem of folderItem.children) {
+                for (const scenarioItem of featureItem[1].children) {
+                    if (token.isCancellationRequested) {
+                        break;
+                    }
+                    await runTestItem(scenarioItem[1]);
                 }
-                const name = line.trim().substring(9).trim();
-                const id = name.replace(/\s+/g, '-').toLowerCase();
-                currentScenario = { name, id };
             }
-        }
+        };
 
-        if (currentScenario) {
-            scenarios.push(currentScenario);
-        }
+        try {
+            const testsToRun: vscode.TestItem[] = request.include ? [...request.include] : [];
 
-        return scenarios;
+            if (testsToRun.length === 0) {
+                // If no specific tests are included, run all tests in the testController
+                testController.items.forEach(testItem => {
+                    if (token.isCancellationRequested) {
+                        return;
+                    }
+                    testsToRun.push(testItem);
+                });
+            }
+
+            // Run the tests
+            for (const testItem of testsToRun) {
+                if (token.isCancellationRequested) {
+                    break;
+                }
+                if (testItem.children.size > 0) {
+                    await runFolder(testItem); // Run all tests in the folder
+                } else {
+                    await runTestItem(testItem); // Run individual test
+                }
+            }
+        } finally {
+            terminal.dispose(); // Clean up the terminal when done
+            run.end();
+        }
     };
 
-    const discoverTestsInWorkspace = async () => {
-        const featureFiles = await vscode.workspace.findFiles(featurePattern);
-
-        for (const file of featureFiles) {
-            const featureItem = loadFeatureFile(file);
-            testController.items.add(featureItem);
-        }
-    };
-
-    context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
-        if (event.document.uri.fsPath.endsWith('.feature')) {
-            const featureItem = loadFeatureFile(event.document.uri);
-            testController.items.add(featureItem);
-        }
-    }));
-
-    context.subscriptions.push(vscode.workspace.onDidCreateFiles(event => {
-        for (const file of event.files) {
-            if (file.fsPath.endsWith('.feature')) {
-                const featureItem = loadFeatureFile(file);
-                testController.items.add(featureItem);
-            }
-        }
-    }));
-
-    context.subscriptions.push(vscode.workspace.onDidDeleteFiles(event => {
-        for (const file of event.files) {
-            if (file.fsPath.endsWith('.feature')) {
-                testController.items.delete(file.toString());
-            }
-        }
-    }));
-
-	// const runHandler = async (request: vscode.TestRunRequest, token: vscode.CancellationToken) => {
-	// 	const run = testController.createTestRun(request);
-	
-	// 	const runTestItem = async (testItem: vscode.TestItem) => {
-	// 		run.started(testItem);
-	// 		try {
-	// 			const scenarioName = testItem.label;
-	// 			const featureFile = testItem.uri!.fsPath;
-	// 			const command = `behave ${featureFile} -n "${scenarioName}"`;
-	
-	// 			// Execute the command in the terminal
-	// 			const terminal = vscode.window.createTerminal('Behave Test Runner');
-	// 			terminal.show();
-	// 			terminal.sendText(command, true);
-	
-	// 			// Assume the test passed for now (since behave output parsing isn't handled here)
-	// 			run.passed(testItem);
-	// 		} catch (err) {
-	// 			run.failed(testItem, new vscode.TestMessage((err as Error).message));
-	// 		}
-	// 	};
-	
-	// 	try {
-	// 		// Iterate over the included tests, or if not specified, iterate over all items in the testController
-	// 		const testsToRun = request.include ?? [...testController.items.values()];
-	
-	// 		for (const testItem of testsToRun) {
-	// 			if (token.isCancellationRequested) {
-	// 				break;
-	// 			}
-	// 			await runTestItem(testItem);
-	// 		}
-	// 	} finally {
-	// 		run.end();
-	// 	}
-	// };
-	const runHandler = async (request: vscode.TestRunRequest, token: vscode.CancellationToken) => {
-		const run = testController.createTestRun(request);
-	
-		// Reuse a single terminal for all test executions
-		const terminal = vscode.window.createTerminal('Behave Test Runner');
-	
-		const runTestItem = async (testItem: vscode.TestItem) => {
-			run.started(testItem);
-			try {
-				const scenarioName = testItem.label;
-				const featureFile = testItem.uri!.fsPath;
-				const command = `behave ${featureFile} -n "${scenarioName}"`;
-	
-				// Send the command to the terminal, preserving focus
-				terminal.sendText(command, true);
-	
-				// Assume the test passed for now (since behave output parsing isn't handled here)
-				run.passed(testItem);
-			} catch (err) {
-				run.failed(testItem, new vscode.TestMessage((err as Error).message));
-			}
-		};
-	
-		try {
-			// Gather tests to run in an array
-			const testsToRun: vscode.TestItem[] = request.include ? [...request.include] : [];
-	
-			if (testsToRun.length === 0) {
-				// If no specific tests are included, run all tests in the testController
-				testController.items.forEach(testItem => {
-					if (token.isCancellationRequested) {
-						return;
-					}
-					testsToRun.push(testItem);
-				});
-			}
-	
-			// Run the tests
-			for (const testItem of testsToRun) {
-				if (token.isCancellationRequested) {
-					break;
-				}
-				await runTestItem(testItem);
-			}
-		} finally {
-			terminal.dispose(); // Clean up the terminal when done
-			run.end();
-		}
-	};
-	
-	testController.createRunProfile('Run Tests', vscode.TestRunProfileKind.Run, runHandler, true);
-	
-
-    discoverTestsInWorkspace();
+    testController.createRunProfile('Run Tests', vscode.TestRunProfileKind.Run, runHandler, true);
 }
 
-export function deactivate() {}
+const createTestItems = (controller: vscode.TestController, workspaceFolder: vscode.WorkspaceFolder) => {
+    const functionFolderUri = vscode.Uri.joinPath(workspaceFolder.uri, 'function');
+    const functionFolder = vscode.workspace.fs.readDirectory(functionFolderUri);
+
+    functionFolder.then(entries => {
+        entries.forEach(async ([name, type]) => {
+            if (type === vscode.FileType.Directory && (name.includes("cbs") || name.includes("cls"))) {
+                const folderUri = vscode.Uri.joinPath(functionFolderUri, name);
+                const folderItem = controller.createTestItem(name, name, folderUri);
+                controller.items.add(folderItem);
+
+                // Add feature files as children of the folder
+                const featureFiles = await vscode.workspace.fs.readDirectory(folderUri);
+                featureFiles.forEach(async ([fileName, fileType]) => {
+                    if (fileType === vscode.FileType.File && fileName.endsWith('.feature')) {
+                        const featureUri = vscode.Uri.joinPath(folderUri, fileName);
+                        const featureItem = controller.createTestItem(fileName, fileName, featureUri);
+                        folderItem.children.add(featureItem);
+
+                        // Add scenarios as children of the feature file
+                        const fileContent = await vscode.workspace.fs.readFile(featureUri);
+                        const featureText = Buffer.from(fileContent).toString('utf8');
+                        const scenarios = extractScenariosFromFeature(featureText);
+
+                        scenarios.forEach(scenario => {
+                            const scenarioItem = controller.createTestItem(scenario, scenario, featureUri);
+                            featureItem.children.add(scenarioItem);
+                        });
+                    }
+                });
+            }
+        });
+    });
+};
+
+const extractScenariosFromFeature = (featureText: string): string[] => {
+    const scenarioRegex = /Scenario: (.+)/g;
+    const scenarios: string[] = [];
+    let match;
+    while ((match = scenarioRegex.exec(featureText)) !== null) {
+        scenarios.push(match[1]);
+    }
+    return scenarios;
+};
